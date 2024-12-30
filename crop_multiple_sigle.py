@@ -16,7 +16,7 @@ import sys
 #!git clone https://github.com/MASSIMOQSELLA/MyAKarpathyMicrogradTest.git
 #!git config --global user.name "MASSIMOQSELLA"
 #!git config --global user.email "massimo_qsella@yahoo.it"
-#!git remote set-url origin https://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@github.com/MASSIMOQSELLA/MyAKarpathyMicrogradTest.git
+#!git remote set-url origin https://<TOKEN>@github.com/MASSIMOQSELLA/MyAKarpathyMicrogradTest.git
 # %cd /content/MyAKarpathyMicrogradTest/crop_images/
 #!git pull
 
