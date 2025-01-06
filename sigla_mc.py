@@ -7,22 +7,37 @@ Original file is located at
     https://colab.research.google.com/drive/1KfEyA4KvB6AVArmbC9s_jZHiwD-2cJ9t
 """
 
-from os import stat
+import os
 import math
 import numpy as np
 import matplotlib.pyplot as plt
-import torch
-from graphviz import Digraph
-import pdb
 import sys
 import random
+from sklearn.model_selection import train_test_split
+import time
+from datetime import datetime
+
+#import torch
+#from graphviz import Digraph
+#import pdb
+
+#!git clone https://github.com/MASSIMOQSELLA/MyAKarpathyMicrogradTest.git
+#!git config --global user.name "USER"
+#!git config --global user.email "email"
+#!git remote set-url origin https://<TOKEN>@github.com/MASSIMOQSELLA/MyAKarpathyMicrogradTest.git
+
 
 class Value:
     """ stores a single scalar value and its gradient """
 
     def __init__(self, data, _children=(), _op=''):
+        if isinstance(data, (np.float32, np.float64)):  # Compatibilità con NumPy
+            data = float(data)
+        elif isinstance(data, (np.int32, np.int64)):  # Compatibilità con NumPy int
+            data = int(data)  # Converti a int nativo Python
         if not isinstance(data, (int, float)):
-          raise TypeError("data must be a scalar (int or float)")
+            print(f"this is the data causing error; {data}, of type: {type(data)}")
+            raise TypeError("data must be a scalar (int or float)")
         self.data = data
         self.grad = 0
         # internal variables used for autograd graph construction
@@ -62,6 +77,16 @@ class Value:
 
         return out
 
+    def log(self):
+        out = Value(math.log(self.data), (self,), 'log')
+        out._prev = {self}
+
+        def _backward():
+            self.grad += (1 / self.data) * out.grad
+        out._backward = _backward
+
+        return out
+
     def relu(self):
         out = Value(0 if self.data < 0 else self.data, (self,), 'ReLU')
 
@@ -72,13 +97,16 @@ class Value:
         return out
 
     def sigmoid(self):
-        out = Value(1/(1+math.exp(-self.data)), (self,), 'sigmoid')
-
+        #print(f"sigmoid > self.data: {self.data}")  # Debug
+        clipped_data = max(min(self.data, 500), -500)  # Clippa i valori estremi
+        out = Value(1/(1+math.exp(-clipped_data)), (self,), 'sigmoid')
         def _backward():
             self.grad += (out.data * (1-out.data)) * out.grad
         out._backward = _backward
 
-    def backward(self):
+        return out
+
+    def old_backward(self):
 
         # topological order all of the children in the graph
         topo = []
@@ -89,18 +117,50 @@ class Value:
                 for child in v._prev:
                     build_topo(child)
                 topo.append(v)
+                print(f"old_backward Visited node: {v.data}")  # Debug per vedere i nodi visitati
         build_topo(self)
+        print("old Backward topo:", [v.data for v in topo])  # Stampa il topo finale
+
+    def backward(self):
+        topo = []
+        visited = set()
+        stack = [self]  # inizializza con il nodo corrente
+
+        while stack:
+            v = stack[-1]
+            if v not in visited:
+                visited.add(v)
+                # Aggiungi i figli non ancora visitati
+                for child in v._prev:
+                    if child not in visited:
+                        stack.append(child)
+            else:
+                stack.pop()  # Rimuovi il nodo dal stack quando è completamente visitato
+                topo.append(v)
+                #print(f"backward Visited node: {v.data}")  # Debug per vedere i nodi visitati
+        #print("Backward topo:", [v.data for v in topo])  # Stampa il topo finale
+        # Ora puoi eseguire il backpropagation sull'ordine topologico
 
         # go one variable at a time and apply the chain rule to get its gradient
         self.grad = 1
         for v in reversed(topo):
             v._backward()
 
+    def __lt__(self, other):
+        if isinstance(other, Value):
+            return self.data < other.data
+        return self.data < other
+
+    def __gt__(self, other):
+        if isinstance(other, Value):
+            return self.data > other.data
+        return self.data > other
+
     def __neg__(self): #-self
         return self * -1
 
     def __radd__(self, other): # other + self
-        return other + self
+        return self + other
 
     def __sub__(self, other): # self - other
         return self + (-other)
@@ -118,7 +178,8 @@ class Value:
         return other * self**-1
 
     def __repr__(self):
-        return f"Value(data={self.data}, grad={self.grad}, nm={self._nm})"
+        #return f"Value(data={self.data}, grad={self.grad}, nm={self._nm})"
+        return f"Value(data={self.data}, grad={self.grad})"
 
 class Module:
 
@@ -135,14 +196,34 @@ class Neuron(Module):
         self.w = [Value(random.uniform(-1,1)) for _ in range(nin)]
         self.b = Value(0)
         self.nonlin = nonlin
+        #if any(wi is None for wi in self.w):
+        #  raise ValueError(f"Class Neuron> Invalid input found in Neuron wi: {self.w}")
+        #print('Class Neuron, self.nonlin:', self.nonlin)
 
     def __call__(self, x):
+        if any(xi is None for xi in x):
+          raise ValueError(f"Class Neuron> Invalid input found in Neuron: {x}")
+        st = time.time() #start time
         act = sum((wi*xi for wi,xi in zip(self.w, x)), self.b)
+        et = time.time() - st #end time #elapsed time
+        print(f"Neuron single activation __call__ elapsed time: {et:.2f} seconds")
+
+        if act is None:
+          print(f"Class Neuron> Error: Activation is None for neuron {self}")
         # Applicazione della funzione di attivazione selezionata per gli strati intermedi (relu) e per l'ultimo (sigmoid)
+
         if self.nonlin == 'sigmoid': # Caso dell'ultimo neurone
-            return act.sigmoid()
+            act_s = act.sigmoid()
+            if act_s is None:
+              print(f"Class Neuron> Error: Activation sigmoid is None for neuron {self}")
+              print(f"Class Neuron: Activation value (act_s): {act_s}")
+            return act_s
         else:
-            return act.relu()  #caso default, artivazione ReLU
+            act_r = act.relu()
+            if act_r is None:
+              print(f"Class Neuron> Error: Activation relu is None for neuron {self}")
+              print(f"Class Neuron: Activation value (act_r): {act_r}")
+            return act_r #caso default, artivazione ReLU
 
     def parameters(self):
         return self.w + [self.b]
@@ -154,18 +235,21 @@ class Neuron(Module):
 class Layer(Module):
 
     def __init__(self, nin, nout, nonlin='relu', **kwargs):
+        self.nin = nin  # Salviamo il numero di input
         self.neurons = [Neuron(nin, nonlin=nonlin, **kwargs) for _ in range(nout)]
 
     def __call__(self, x):
+        st = time.time() #start time
         out = [n(x) for n in self.neurons]
-#        return out[0] if len(out) == 1 else out
-        return out
+        et = time.time() - st #end time #elapsed time
+        print(f"Layer single neuron(x) __call__ elapsed time: {et:.2f} seconds")
+        return out[0] if len(out) == 1 else out
 
     def parameters(self):
         return [p for n in self.neurons for p in n.parameters()]
 
     def __repr__(self):
-        return f"Layer of [{', '.join(str(n) for n in self.neurons)}]"
+        return f"Layer of {len(self.neurons)} neurons with nonlin={self.neurons[0].nonlin}, expecting {self.nin} inputs each"
 
 class MLP(Module):
 
@@ -174,12 +258,262 @@ class MLP(Module):
         self.layers = [Layer(sz[i], sz[i+1], nonlin='sigmoid' if i == (len(nouts) -1) else nonlin) for i in range(len(nouts))]
 
     def __call__(self, x):
+        st = time.time() #start time
         for layer in self.layers:
+            st_p = time.time()
             x = layer(x)
+            et_p = time.time() - st_p #end time #elapsed time
+            print(f"MLP single layer(x) __call__ elapsed time: {et_p:.2f} seconds")
+
+        et = time.time() - st #end time #elapsed time
+        print(f"MLP __call__ all layers(x) elapsed time: {et:.2f} seconds")
         return x
 
     def parameters(self):
         return [p for layer in self.layers for p in layer.parameters()]
 
     def __repr__(self):
-        return f"MLP of [{', '.join(str(layer) for layer in self.layers)}]"
+        return f"MLP of {len(self.layers)} layers: " + ', '.join([f"{len(layer.neurons)} neurons ({layer.neurons[0].nonlin})" for layer in self.layers])
+
+# Funzione per la perdita Binary Cross-Entropy
+def binary_cross_entropy(pred, target):
+    epsilon = Value(1e-15)  # Per evitare log(0)
+    one = Value(1.0)  # Valore 1 come Value
+    # Clipping dei valori predetti (per evitare log(0) o log(1))
+    pred = pred if pred > epsilon else epsilon
+    pred = pred if pred < (one - epsilon) else (one - epsilon)
+
+    # Calcolo della perdita BCE
+    loss = - (target * pred.log() + (one - target) * (one - pred).log())
+    return loss
+
+# Funzione di perdita (MSE - Mean Squared Error)
+def mean_squared_error(pred, target):
+    return (pred - target)**2
+
+def check_random_image (data):
+  i = random.randint(0, len(data) - 1)
+  flag = input_data[i][1]
+  image_vector = input_data[i][0]  #  vettore 1D
+  image_2d = image_vector.reshape(56, 56)  # Ricostruzione in 2D
+  plt.imshow(image_2d, cmap='gray')
+  plt.title(f"Immagine {flag} numero {i} ricostuita")
+  plt.axis("off")  # Nascondi gli assi
+  plt.show()
+
+def set_batch_size(data_file_size, tent_b_size): # determino il batch_size più vicino al riferimento per avere batches tutti uguali
+  for i in range(tent_b_size, data_file_size + 1):  # Inizia da r e arriva fino a tdd
+      if data_file_size % i == 0:
+          return i  # Restituisce il primo divisore trovato
+  print('chosen batch size:',i)
+
+def shuffle_split(data_file, batch_size):
+  random.shuffle(data_file)
+  batches = [data_file [i:i + batch_size] for i in range(0, len(data_file), batch_size)]
+  print(f"Numero di batch: {len(batches)}")
+  print(f"Primo batch: {len(batches[0]), 'ultimo batch:', {len(batches[-1])}}")
+  return batches
+
+def calculate_accuracy(model, test_data, threshold=0.5):
+    st = time.time() #start time
+    correct_predictions = 0
+    for x, y in test_data:
+        inputs = [Value(xi) for xi in x]
+        pred = model(inputs)
+        pred = pred[0].data if isinstance(pred, list) else pred.data
+        correct_predictions += int((pred >= threshold) == y)  # Soglia per classificazione binaria
+    et = time.time() - st #end time #elapsed time
+    print(f"Accuracy calculation elapsed time: {et:.2f} seconds")
+    return correct_predictions / len(test_data)
+
+def set_input(false_vectors_path, true_vectors_path):
+
+  # Carica i dataset
+  false_signatures = np.load(false_vectors_path)  # Forma: (528, 3136)
+  true_signatures = np.load(true_vectors_path)    # Forma: (438, 3136)
+  print('false_signatures loaded:', false_signatures.shape, 'true_signatures loaded:', true_signatures.shape )
+
+  label_f = 0 #attributo di falsità che sarà l'output atteso della predizione per questo set di input
+  label_t = 1 #attributo di autenticità che sarà l'output atteso della predizione per questo set di input
+
+  false_signatures_input = [(row, label_f) for row in false_signatures] # Trasformazione in tuple immagine-etichetta
+  true_signatures_input = [(row, label_t) for row in true_signatures] # Trasformazione in tuple immagine-etichetta
+  print('false_signatures_input',len(false_signatures_input), 'etichetta:', false_signatures_input[47][1])
+  print('true_signatures_input',len(true_signatures_input), 'etichetta:', true_signatures_input[58][1])
+
+  input_data_ready = (false_signatures_input + true_signatures_input) # Unione dei due set di dati
+  print('input_data ready', len(input_data_ready))
+
+  return input_data_ready
+
+def check_array (arr, title):
+  print(f"{title} shuffled length: {len(arr)}")
+  print(f"First element type: {type(arr[0])}, shape: {arr[0][0].shape}, label: {arr[0][1]}")
+  print(f"Second element type: {type(arr[1])}, shape: {arr[1][0].shape}, label: {arr[1][1]}")
+  print(f"First element sub-type [0]: {type(arr[0][0])}, shape: {arr[0][0].shape}, label: {arr[0][1]}")
+  print(f"Second element sub-type: {type(arr[1][0])}, shape: {arr[1][0].shape}, label: {arr[1][1]}")
+  count_float_arr = 0
+  count_int_arr = 0
+  count_other_arr = 0
+  count_float_label = 0
+  count_int_label = 0
+  count_other_label = 0
+  for idx, (arr,label) in enumerate(arr):
+    #print(f"Element {idx}: Type of numpy array: {arr.dtype}")
+    if np.issubdtype(arr.dtype, np.integer):
+        count_int_arr += 1
+    elif np.issubdtype(arr.dtype, np.floating):
+        count_float_arr += 1
+    else:
+        count_other_arr += 1
+    if isinstance(label, int):
+        count_int_label += 1
+    elif isinstance(label, float):
+        count_float_label += 1
+    else:
+        count_other_label += 1
+  print(f"count_float: {count_float_arr}, count_int: {count_int_arr}, count_other: {count_other_arr} in array")
+  print(f"count_float: {count_float_label}, count_int: {count_int_label}, count_other: {count_other_label} in label")
+
+def check_x_y(x,y):
+  print(f"x type: {type(x)}, y type: {type(y)}")
+  print(f"type(x[0]):", {type(x[0])})
+  print(f"type(x[0].data):", {type(x[0].data)})
+  print('x[0].data:', x[0].data)
+  print("x Children:", x._prev)
+  print('y.data:', y.data)
+  print('type(y.data):',type(y.data))
+  print("y Children:", y._prev)
+
+  data_type_set = set()
+  for i in range(len(x)):
+    data_type_set.add(type(x[i].data))
+  print('x.data data_type_set', data_type_set)
+  print('y.data type:', type(y.data))
+
+# Funzione per addestrare un singolo batch
+def train_batch(model, batch, learning_rate):
+    #check_array(batch, 'batch entro train_batch')
+    total_loss = 0
+    for x, y in batch:
+
+        # Conversione degli input in oggetti Value
+        st = time.time() #start time
+        inputs = [Value(xi) for xi in x]
+        target = Value(y)
+        et = time.time() - st #end time #elapsed time
+        print(f"train_batch conversione in oggetti value elapsed time: {et:.2f} seconds")
+
+        # Passaggio in avanti
+        st = time.time() #start time
+        pred = model(inputs)
+        if isinstance(pred, list):
+            pred = pred[0]
+        et = time.time() - st #end time #elapsed time
+        print(f"train_batch forward pass elapsed time: {et:.2f} seconds")
+
+        # Calcolo della perdita
+        st = time.time() #start time
+        loss = mean_squared_error(pred, target)
+        total_loss += loss.data
+        et = time.time() - st #end time #elapsed time
+        print(f"train_batch loss calculation elapsed time: {et:.2f} seconds")
+
+        # Retropropagazione
+        st = time.time() #start time
+        model.zero_grad()
+        #print(f"Loss before backward: {loss.data}, gradients: {[p.grad for p in model.parameters()]}")
+        loss.backward()
+        et = time.time() - st #end time #elapsed time
+        print(f"train_batch loss. backward elapsed time: {et:.2f} seconds")
+        #print(f"Gradients after backward: {[p.grad for p in model.parameters()]}")
+
+        # Aggiornamento dei parametri
+        st = time.time() #start time
+        for p in model.parameters():
+            p.grad = max(min(p.grad, 1e2), -1e2)  # Limita i gradienti a un range ragionevole
+            #print(f"Param before update: {p.data}, grad: {p.grad}")
+            p.data -= learning_rate * p.grad
+            #print(f"Param after update: {p.data}")
+        et = time.time() - st #end time #elapsed time
+        print(f"train_batch parameters update elapsed time: {et:.2f} seconds")
+    return total_loss
+
+
+# INIZIO PROGRAMMA (MAIN)
+start_time = time.time()
+readable_time = datetime.fromtimestamp(start_time).strftime('%Y-%m-%d %H:%M:%S')
+print(f"program start time: {readable_time}")
+
+# preparo il file input_data con gli input/output per la rete
+true_vectors_path = "/content/MyAKarpathyMicrogradTest/signatures_real/dataset_sigle_real_vectors.npy"
+false_vectors_path = "/content/MyAKarpathyMicrogradTest/signatures_false/dataset_sigle_false_vectors.npy"
+
+input_data = set_input(false_vectors_path, true_vectors_path)
+
+input_data_shuffled = input_data.copy() # faccio una copia
+random.shuffle(input_data_shuffled) # mischio gli input in place
+
+#check_random_image(input_data_shuffled)
+
+# Dividi input_data in dati per il training (90%) e per il test di controllo dell'apprendimento (10%)
+train_data, test_data = train_test_split(input_data_shuffled, test_size=0.01, random_state=42)
+print(f"Train size: {len(train_data)}, Test size: {len(test_data)}, type(train_data): {type(train_data)}")
+f_count = sum(1 for item in test_data if item[1] == 0)  # False
+t_count = sum(1 for item in test_data if item[1] == 1)  # Vere
+print(f"test_data_set has {f_count} false and {t_count} true signatures")
+
+train_data_shuffled = train_data.copy() # faccio una copia per temermi l'originale prima dei prossimi reshuffle in place
+#check_array (train_data_shuffled, 'train_data_shuffled')
+
+# creo una istanza della rete neurale
+# Rete con 3136 input corrispondenti al vettore di 56x56 valori-immagine, uno strato nascosto con 128 neuroni, e un output singolo
+
+mlp = MLP(3136, [128, 1])
+print("MLP Layers:")
+for layer in mlp.layers:  # Supponendo che 'mlp.layers' contenga i layer
+    print(layer)
+
+# Addestramento della rete
+np.random.seed(1337)
+random.seed(1337)
+iterations = 1
+learning_rate = 0.01
+reshuffle_interval = 5
+epsilon_loss = 0.01  # Soglia per la perdita
+target_accuracy = 0.95  # Accuratezza desiderata
+
+for epoch in range(iterations):
+  epoch_start_time = time.time()
+  print (f"epoch {epoch} of {iterations} iterations")
+  if epoch % reshuffle_interval == 0:
+
+      # mischia e suddivivi in batches uguali di almeno 32 elementi o più (dipende dal numero di elemeniot e i suoi divisori)
+      batch_size = set_batch_size(len(train_data), 32); batch_size = 15
+      print(f"train_data size: {len(train_data)}, suggested batch_size:', {batch_size}")
+      batches = shuffle_split(train_data, batch_size) # mischio il dataset e lo suddivido in batches uguali da batch_size elementi
+      print(f"batches type: {type(batches)}, batches subtype: {type(batches[0][0])}, batches dimension: {len(batches)}")
+
+  total_loss = 0
+  count_batches = 0
+  for batch in batches:
+    count_batches += 1
+    #print(f"batch {count_batches} of {len(batches)}")
+    #check_array (batch, f"batch num {count_batches}")
+    #loss = train_batch(mlp, batch, learning_rate)
+    loss = 100
+    #print(f"loss del primo batch: {loss}")
+    total_loss += loss
+  # Calcola l'accuratezza sul set di test
+  epoch_end_time = time.time()
+  epoch_et = epoch_end_time - epoch_start_time
+  readable_epoch_et = datetime.fromtimestamp(epoch_et).strftime('%Y-%m-%d %H:%M:%S')
+  print(f"Epoch {epoch} elapsed time: {epoch_et:.2f} seconds")
+  accuracy = calculate_accuracy(mlp, test_data, threshold = 0.5)
+  print(f"Epoch {epoch}: Loss = {total_loss:.4f}, Accuracy = {accuracy * 100:.2f}%")
+
+  # Condizioni di uscita
+  if total_loss < epsilon_loss and accuracy > target_accuracy:
+      print("Addestramento completato con successo.")
+      break
+
